@@ -22,6 +22,13 @@ export const chunkStatusEnum = pgEnum("chunk_status", [
   "failed",
 ]);
 
+export const transcriptionStatusEnum = pgEnum("transcription_status", [
+  "pending",
+  "processing",
+  "completed",
+  "failed",
+]);
+
 // Recordings table - represents a recording session
 export const recordings = pgTable("recordings", {
   id: text("id").primaryKey(), // UUID from client
@@ -60,6 +67,13 @@ export const chunks = pgTable("chunks", {
   createdAt: timestamp("created_at").defaultNow().notNull(),
   retryCount: integer("retry_count").default(0).notNull(),
   lastError: text("last_error"),
+  // Transcription fields
+  transcript: text("transcript"),
+  transcriptionStatus: transcriptionStatusEnum("transcription_status").default("pending"),
+  transcribedAt: timestamp("transcribed_at"),
+  transcriptionError: text("transcription_error"),
+  language: text("language"), // Detected language code
+  confidence: integer("confidence"), // Confidence score 0-100
 }, (table) => [
   // Unique constraint: one chunk per index per recording
   uniqueIndex("chunks_recording_index_unique").on(table.recordingId, table.chunkIndex),

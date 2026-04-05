@@ -7,6 +7,12 @@ import {
   cachePresignedUrl, 
   getCachedPresignedUrl 
 } from "../lib/cache";
+import { 
+  queueTranscription, 
+  transcribeChunk, 
+  getRecordingTranscript,
+  isTranscriptionEnabled 
+} from "../lib/transcription";
 
 const app = new Hono();
 
@@ -151,6 +157,9 @@ app.post("/confirm-upload", async (c) => {
       return c.json({ success: false, error: "Failed to update chunk" }, 500);
     }
 
+    // Queue transcription in background
+    queueTranscription(chunkId);
+
     return c.json({
       success: true,
       chunk: {
@@ -158,6 +167,7 @@ app.post("/confirm-upload", async (c) => {
         status: updated.status,
         bucketPath: updated.bucketPath,
       },
+      transcriptionQueued: isTranscriptionEnabled(),
     });
   } catch (error) {
     console.error("Failed to confirm upload:", error);
@@ -269,6 +279,9 @@ app.post("/upload", async (c) => {
       return c.json({ success: false, error: "Failed to save chunk" }, 500);
     }
 
+    // Queue transcription in background
+    queueTranscription(chunk.id);
+
     return c.json({
       success: true,
       chunk: {
@@ -277,6 +290,7 @@ app.post("/upload", async (c) => {
         bucketPath: chunk.bucketPath,
         checksum: chunk.checksum,
       },
+      transcriptionQueued: isTranscriptionEnabled(),
     });
   } catch (error) {
     console.error("Failed to upload chunk:", error);
@@ -543,6 +557,130 @@ app.get("/:chunkId/status", async (c) => {
     console.error("Failed to get chunk status:", error);
     return c.json({ success: false, error: "Failed to get chunk status" }, 500);
   }
+});
+
+// ============================================
+// Transcription Endpoints
+// ============================================
+
+/**
+ * Get transcription for a single chunk
+ */
+app.get("/:chunkId/transcription", async (c) => {
+  try {
+    const chunkId = c.req.param("chunkId");
+
+    const [chunk] = await db
+      .select({
+        id: chunks.id,
+        transcript: chunks.transcript,
+        transcriptionStatus: chunks.transcriptionStatus,
+        language: chunks.language,
+        confidence: chunks.confidence,
+        transcribedAt: chunks.transcribedAt,
+        transcriptionError: chunks.transcriptionError,
+      })
+      .from(chunks)
+      .where(eq(chunks.id, chunkId))
+      .limit(1);
+
+    if (!chunk) {
+      return c.json({ success: false, error: "Chunk not found" }, 404);
+    }
+
+    return c.json({
+      success: true,
+      transcription: {
+        status: chunk.transcriptionStatus,
+        transcript: chunk.transcript,
+        language: chunk.language,
+        confidence: chunk.confidence,
+        transcribedAt: chunk.transcribedAt,
+        error: chunk.transcriptionError,
+      },
+    });
+  } catch (error) {
+    console.error("Failed to get transcription:", error);
+    return c.json({ success: false, error: "Failed to get transcription" }, 500);
+  }
+});
+
+/**
+ * Retry transcription for a chunk
+ */
+app.post("/:chunkId/transcribe", async (c) => {
+  try {
+    const chunkId = c.req.param("chunkId");
+
+    if (!isTranscriptionEnabled()) {
+      return c.json({
+        success: false,
+        error: "Transcription not enabled (OPENAI_API_KEY not set)",
+      }, 400);
+    }
+
+    const [chunk] = await db
+      .select()
+      .from(chunks)
+      .where(eq(chunks.id, chunkId))
+      .limit(1);
+
+    if (!chunk) {
+      return c.json({ success: false, error: "Chunk not found" }, 404);
+    }
+
+    // Process synchronously for retry requests
+    const result = await transcribeChunk(chunkId);
+
+    return c.json({
+      success: result.success,
+      transcription: result.success
+        ? {
+            transcript: result.transcript,
+            language: result.language,
+            confidence: result.confidence,
+          }
+        : undefined,
+      error: result.error,
+    });
+  } catch (error) {
+    console.error("Failed to transcribe:", error);
+    return c.json({ success: false, error: "Transcription failed" }, 500);
+  }
+});
+
+/**
+ * Get full transcript for a recording (all chunks combined)
+ */
+app.get("/recording/:recordingId/transcript", async (c) => {
+  try {
+    const recordingId = c.req.param("recordingId");
+    const result = await getRecordingTranscript(recordingId);
+
+    if (!result.success) {
+      return c.json({ success: false, error: result.error }, 404);
+    }
+
+    return c.json({
+      success: true,
+      recordingId,
+      transcript: result.transcript,
+      chunks: result.chunks,
+    });
+  } catch (error) {
+    console.error("Failed to get recording transcript:", error);
+    return c.json({ success: false, error: "Failed to get transcript" }, 500);
+  }
+});
+
+/**
+ * Check transcription status
+ */
+app.get("/transcription-status", async (c) => {
+  return c.json({
+    enabled: isTranscriptionEnabled(),
+    model: "whisper-1",
+  });
 });
 
 export default app;

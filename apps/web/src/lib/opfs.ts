@@ -189,6 +189,7 @@ export async function saveRecordingMetadata(
     chunkDuration: number;
     totalChunks: number;
     createdAt: string;
+    serverCreated?: boolean;
   }
 ): Promise<boolean> {
   try {
@@ -214,6 +215,7 @@ export async function loadRecordingMetadata(recordingId: string): Promise<{
   chunkDuration: number;
   totalChunks: number;
   createdAt: string;
+  serverCreated?: boolean;
 } | null> {
   try {
     const dir = await getRecordingDir(recordingId);

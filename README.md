@@ -10,6 +10,7 @@ A production-ready, scalable voice recording system designed for 100-1000+ concu
 - **📊 Rate Limiting** — Per-user/IP rate limiting with Redis backend
 - **🔄 Auto-Reconciliation** — Detects and recovers missing chunks automatically
 - **📈 Horizontally Scalable** — Stateless API servers, shared S3/Redis/PostgreSQL
+- **🎯 Real-time Transcription** — OpenAI Whisper transcription for each audio chunk
 
 ## 🏗️ Architecture
 
@@ -169,6 +170,10 @@ npm run dev
 | `GET` | `/api/chunks/recording/:id` | List chunks for recording |
 | `GET` | `/api/chunks/:id/playback-url` | Get playback URL |
 | `POST` | `/api/chunks/reconcile` | Verify storage integrity |
+| `GET` | `/api/chunks/:id/transcription` | Get chunk transcription |
+| `POST` | `/api/chunks/:id/transcribe` | Retry transcription |
+| `GET` | `/api/chunks/recording/:id/transcript` | Get full recording transcript |
+| `GET` | `/api/chunks/transcription-status` | Check if transcription enabled |
 
 ### Health
 

@@ -52,6 +52,9 @@ export const env = createEnv({
     
     // API authentication (optional)
     API_KEY: z.string().optional(), // For server-to-server auth
+    
+    // OpenAI (for Whisper transcription)
+    OPENAI_API_KEY: z.string().optional(),
   },
   runtimeEnv: process.env,
   emptyStringAsUndefined: true,

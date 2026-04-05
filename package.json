@@ -29,6 +29,7 @@
     "@my-better-t-app/env": "*",
     "dotenv": "^17.2.2",
     "ioredis": "^5.10.1",
+    "openai": "^6.33.0",
     "zod": "^4.1.13"
   },
   "devDependencies": {

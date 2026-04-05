@@ -9,6 +9,9 @@ import recordingsRoutes from "./routes/recordings";
 import chunksRoutes from "./routes/chunks";
 import { rateLimiter } from "./middleware/rate-limit";
 import { cache } from "./lib/cache";
+import { isTranscriptionEnabled } from "./lib/transcription";
+import { db, recordings, chunks } from "@my-better-t-app/db";
+import { count, sql } from "drizzle-orm";
 
 const app = new Hono();
 
@@ -58,12 +61,23 @@ app.get("/", (c) => {
 
 // Detailed health check for monitoring
 app.get("/health", async (c) => {
+  // Check database connectivity
+  let dbStatus = "disconnected";
+  try {
+    await db.execute(sql`SELECT 1`);
+    dbStatus = "connected";
+  } catch {
+    dbStatus = "disconnected";
+  }
+
   const health = {
-    status: "ok",
+    status: dbStatus === "connected" ? "ok" : "degraded",
     timestamp: new Date().toISOString(),
     services: {
+      database: dbStatus,
       cache: cache.isAvailable() ? "connected" : "unavailable",
       storage: env.STORAGE_ENDPOINT ? "s3" : "local",
+      transcription: isTranscriptionEnabled() ? "enabled" : "disabled",
     },
     config: {
       rateLimit: {
@@ -74,6 +88,55 @@ app.get("/health", async (c) => {
   };
 
   return c.json(health);
+});
+
+// Stats endpoint for dashboard
+app.get("/stats", async (c) => {
+  try {
+    // Get recording counts
+    const [recordingStats] = await db
+      .select({
+        total: count(),
+        active: count(sql`CASE WHEN ${recordings.status} = 'active' THEN 1 END`),
+        completed: count(sql`CASE WHEN ${recordings.status} = 'completed' THEN 1 END`),
+      })
+      .from(recordings);
+
+    // Get chunk counts
+    const [chunkStats] = await db
+      .select({
+        total: count(),
+        uploaded: count(sql`CASE WHEN ${chunks.status} = 'uploaded' THEN 1 END`),
+        acknowledged: count(sql`CASE WHEN ${chunks.status} = 'acknowledged' THEN 1 END`),
+        transcribed: count(sql`CASE WHEN ${chunks.transcriptionStatus} = 'completed' THEN 1 END`),
+        pendingTranscription: count(sql`CASE WHEN ${chunks.transcriptionStatus} = 'pending' THEN 1 END`),
+      })
+      .from(chunks);
+
+    // Get recent recordings (last 5)
+    const recentRecordings = await db
+      .select({
+        id: recordings.id,
+        status: recordings.status,
+        totalChunks: recordings.totalChunks,
+        createdAt: recordings.createdAt,
+      })
+      .from(recordings)
+      .orderBy(sql`${recordings.createdAt} DESC`)
+      .limit(5);
+
+    return c.json({
+      success: true,
+      stats: {
+        recordings: recordingStats,
+        chunks: chunkStats,
+        recentRecordings,
+      },
+    });
+  } catch (error) {
+    console.error("Failed to get stats:", error);
+    return c.json({ success: false, error: "Failed to get stats" }, 500);
+  }
 });
 
 // ============================================

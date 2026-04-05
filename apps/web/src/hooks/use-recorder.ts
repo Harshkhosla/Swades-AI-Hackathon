@@ -104,6 +104,7 @@ export function useRecorder(options: UseRecorderOptions = {}) {
   const chunkIndexRef = useRef(0)
   const uploadQueueRef = useRef<Array<{ chunk: WavChunk; resolve: () => void }>>([])
   const isUploadingRef = useRef(false)
+  const serverCreatedRef = useRef(false)
 
   statusRef.current = status
   recordingIdRef.current = recordingId
@@ -117,6 +118,11 @@ export function useRecorder(options: UseRecorderOptions = {}) {
   const processUploadQueue = useCallback(async () => {
     if (isUploadingRef.current || uploadQueueRef.current.length === 0) return
     if (!recordingIdRef.current) return
+    // Skip uploads if server recording wasn't created
+    if (!serverCreatedRef.current) {
+      console.warn("Skipping upload - server recording not created")
+      return
+    }
 
     isUploadingRef.current = true
     setSyncStatus("syncing")
@@ -261,6 +267,7 @@ export function useRecorder(options: UseRecorderOptions = {}) {
       const newRecordingId = crypto.randomUUID()
       const clientId = getOrCreateClientId()
 
+      serverCreatedRef.current = false
       if (autoUpload) {
         const createResult = await createRecording({
           id: newRecordingId,
@@ -271,7 +278,9 @@ export function useRecorder(options: UseRecorderOptions = {}) {
 
         if (!createResult.success) {
           console.error("Failed to create recording:", createResult.error)
-          // Continue anyway - we can sync later from OPFS
+          // Don't upload to server - just save to OPFS for later sync
+        } else {
+          serverCreatedRef.current = true
         }
 
         // Save metadata to OPFS
@@ -282,6 +291,7 @@ export function useRecorder(options: UseRecorderOptions = {}) {
             chunkDuration,
             totalChunks: 0,
             createdAt: new Date().toISOString(),
+            serverCreated: serverCreatedRef.current,
           })
         }
       }
