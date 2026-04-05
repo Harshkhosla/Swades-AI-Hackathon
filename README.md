@@ -43,12 +43,34 @@ npm install
 
 ### Database Setup
 
-1. Make sure you have a PostgreSQL database set up.
-2. Update your `apps/server/.env` with your PostgreSQL connection details.
-3. Apply the schema:
+1. Start Docker Desktop (required for PostgreSQL)
+2. Start the database container:
+
+```bash
+npm run db:start
+```
+
+3. Push the schema to the database:
 
 ```bash
 npm run db:push
+```
+
+### Environment Variables
+
+The `.env` files are already configured for local development:
+
+**apps/server/.env:**
+```env
+DATABASE_URL="postgresql://postgres:postgres@localhost:5432/recordings_db"
+CORS_ORIGIN="http://localhost:3001"
+NODE_ENV="development"
+STORAGE_LOCAL_PATH="./uploads"
+```
+
+**apps/web/.env:**
+```env
+NEXT_PUBLIC_SERVER_URL="http://localhost:3000"
 ```
 
 ### Run Development
@@ -59,6 +81,54 @@ npm run dev
 
 - Web app: [http://localhost:3001](http://localhost:3001)
 - API server: [http://localhost:3000](http://localhost:3000)
+
+## API Endpoints
+
+### Recordings
+
+| Method | Endpoint | Description |
+|--------|----------|-------------|
+| POST | `/api/recordings` | Create a new recording session |
+| GET | `/api/recordings/:id` | Get recording details |
+| POST | `/api/recordings/:id/complete` | Mark recording as complete |
+
+### Chunks
+
+| Method | Endpoint | Description |
+|--------|----------|-------------|
+| POST | `/api/chunks/upload` | Upload a chunk (multipart/form-data) |
+| POST | `/api/chunks/ack` | Acknowledge a chunk is safely stored |
+| GET | `/api/chunks/recording/:recordingId` | Get all chunks for a recording |
+| GET | `/api/chunks/needs-reupload/:recordingId` | Get chunks needing re-upload |
+| POST | `/api/chunks/reconcile` | Verify and repair chunk storage |
+| GET | `/api/chunks/:chunkId/status` | Get chunk status |
+
+## Client-Side Pipeline
+
+The recording pipeline uses OPFS (Origin Private File System) for durability:
+
+```
+Recording Start → Create Recording Session (DB)
+       ↓
+Audio Chunk Ready → Save to OPFS → Upload to Server → Acknowledge
+       ↓
+Recording Stop → Complete Recording → Clean up OPFS (after all acks)
+```
+
+### OPFS Storage
+
+Chunks are stored in OPFS at:
+```
+/recordings/{recordingId}/chunks/chunk_000001.wav
+/recordings/{recordingId}/metadata.json
+```
+
+### Recovery Flow
+
+On page load or manual trigger:
+1. Call `/api/chunks/reconcile` to check for missing chunks
+2. If chunks are missing from storage but exist in OPFS, re-upload them
+3. Clean up OPFS only after successful acknowledgment
 
 ## Load Testing
 
@@ -73,6 +143,7 @@ Example with **k6**:
 ```js
 import http from "k6/http";
 import { check } from "k6";
+import { uuidv4 } from 'https://jslib.k6.io/k6-utils/1.4.0/index.js';
 
 export const options = {
   scenarios: {
@@ -87,19 +158,42 @@ export const options = {
   },
 };
 
-export default function () {
-  const payload = JSON.stringify({
-    chunkId: `chunk-${__VU}-${__ITER}`,
-    data: "x".repeat(1024), // 1KB dummy chunk
-  });
+// Create a test recording first, then use its ID
+const RECORDING_ID = "test-recording-id"; // Replace with actual recording ID
 
-  const res = http.post("http://localhost:3000/api/chunks/upload", payload, {
-    headers: { "Content-Type": "application/json" },
-  });
+export default function () {
+  const chunkId = uuidv4();
+  const chunkIndex = __ITER;
+  
+  // Create dummy WAV data (1KB)
+  const dummyData = "x".repeat(1024);
+  
+  const formData = {
+    file: http.file(dummyData, `chunk_${chunkIndex}.wav`, "audio/wav"),
+    chunkId: chunkId,
+    recordingId: RECORDING_ID,
+    chunkIndex: chunkIndex.toString(),
+    duration: "5000",
+  };
+
+  const res = http.post("http://localhost:3000/api/chunks/upload", formData);
 
   check(res, {
-    "status 200": (r) => r.status === 200,
+    "upload status 200": (r) => r.status === 200,
   });
+
+  // Acknowledge the chunk
+  if (res.status === 200) {
+    const ackRes = http.post(
+      "http://localhost:3000/api/chunks/ack",
+      JSON.stringify({ chunkId }),
+      { headers: { "Content-Type": "application/json" } }
+    );
+    
+    check(ackRes, {
+      "ack status 200": (r) => r.status === 200,
+    });
+  }
 }
 ```
 
