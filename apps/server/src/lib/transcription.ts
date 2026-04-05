@@ -4,10 +4,28 @@ import { eq } from "drizzle-orm";
 import { storage } from "./storage";
 import { env } from "@my-better-t-app/env/server";
 
-// Initialize OpenAI client
-const openai = env.OPENAI_API_KEY
+// Default OpenAI client from env (can be null)
+const defaultOpenai = env.OPENAI_API_KEY
   ? new OpenAI({ apiKey: env.OPENAI_API_KEY })
   : null;
+
+// Cache for dynamic clients (per API key)
+const clientCache = new Map<string, OpenAI>();
+
+/**
+ * Get OpenAI client - uses provided key or falls back to env
+ */
+function getOpenAIClient(apiKey?: string): OpenAI | null {
+  // If key provided, create/cache client for it
+  if (apiKey && apiKey.startsWith("sk-")) {
+    if (!clientCache.has(apiKey)) {
+      clientCache.set(apiKey, new OpenAI({ apiKey }));
+    }
+    return clientCache.get(apiKey)!;
+  }
+  // Fall back to default from env
+  return defaultOpenai;
+}
 
 export interface TranscriptionResult {
   success: boolean;
@@ -20,15 +38,21 @@ export interface TranscriptionResult {
 
 /**
  * Transcribe an audio file using OpenAI Whisper API
+ * @param audioBuffer - The audio data to transcribe
+ * @param filename - Filename with extension for MIME type detection
+ * @param apiKey - Optional API key (uses env if not provided)
  */
 export async function transcribeAudio(
   audioBuffer: Buffer,
-  filename: string = "audio.wav"
+  filename: string = "audio.wav",
+  apiKey?: string
 ): Promise<TranscriptionResult> {
-  if (!openai) {
+  const client = getOpenAIClient(apiKey);
+  
+  if (!client) {
     return {
       success: false,
-      error: "OpenAI API key not configured",
+      error: "OpenAI API key not configured. Add your key in Settings.",
     };
   }
 
@@ -39,7 +63,7 @@ export async function transcribeAudio(
     });
 
     // Call Whisper API with verbose response for confidence
-    const response = await openai.audio.transcriptions.create({
+    const response = await client.audio.transcriptions.create({
       file,
       model: "whisper-1",
       response_format: "verbose_json",
@@ -86,8 +110,10 @@ export async function transcribeAudio(
 /**
  * Transcribe a chunk by its ID
  * Fetches audio from storage, transcribes, and updates the database
+ * @param chunkId - The chunk ID to transcribe
+ * @param apiKey - Optional API key (uses env if not provided)
  */
-export async function transcribeChunk(chunkId: string): Promise<TranscriptionResult> {
+export async function transcribeChunk(chunkId: string, apiKey?: string): Promise<TranscriptionResult> {
   try {
     // Get chunk from database
     const [chunk] = await db
@@ -126,7 +152,8 @@ export async function transcribeChunk(chunkId: string): Promise<TranscriptionRes
     // Transcribe
     const result = await transcribeAudio(
       audioData,
-      chunk.bucketPath.split("/").pop() || "audio.wav"
+      chunk.bucketPath.split("/").pop() || "audio.wav",
+      apiKey
     );
 
     if (!result.success) {
@@ -175,9 +202,12 @@ export async function transcribeChunk(chunkId: string): Promise<TranscriptionRes
  * Queue transcription for async processing
  * In production, this would use a job queue (Bull, SQS, etc.)
  * For now, we process in the background without blocking
+ * @param chunkId - The chunk ID to transcribe
+ * @param apiKey - Optional API key (uses env if not provided)
  */
-export function queueTranscription(chunkId: string): void {
-  if (!openai) {
+export function queueTranscription(chunkId: string, apiKey?: string): void {
+  const client = getOpenAIClient(apiKey);
+  if (!client) {
     console.warn("Skipping transcription - OpenAI API key not configured");
     return;
   }
@@ -186,7 +216,7 @@ export function queueTranscription(chunkId: string): void {
   setImmediate(async () => {
     try {
       console.log(`[Transcription] Starting transcription for chunk ${chunkId}`);
-      const result = await transcribeChunk(chunkId);
+      const result = await transcribeChunk(chunkId, apiKey);
       if (result.success) {
         console.log(`[Transcription] Completed for chunk ${chunkId}: "${result.transcript?.slice(0, 50)}..."`);
       } else {
@@ -257,8 +287,8 @@ export async function getRecordingTranscript(recordingId: string): Promise<{
 }
 
 /**
- * Check if transcription is enabled
+ * Check if transcription is enabled (default API key configured in env)
  */
 export function isTranscriptionEnabled(): boolean {
-  return !!openai;
+  return !!defaultOpenai;
 }

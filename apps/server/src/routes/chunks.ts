@@ -157,8 +157,9 @@ app.post("/confirm-upload", async (c) => {
       return c.json({ success: false, error: "Failed to update chunk" }, 500);
     }
 
-    // Queue transcription in background
-    queueTranscription(chunkId);
+    // Queue transcription in background (use API key from header if provided)
+    const apiKey = c.req.header("X-OpenAI-Key");
+    queueTranscription(chunkId, apiKey);
 
     return c.json({
       success: true,
@@ -167,7 +168,7 @@ app.post("/confirm-upload", async (c) => {
         status: updated.status,
         bucketPath: updated.bucketPath,
       },
-      transcriptionQueued: isTranscriptionEnabled(),
+      transcriptionQueued: isTranscriptionEnabled() || !!apiKey,
     });
   } catch (error) {
     console.error("Failed to confirm upload:", error);
@@ -279,8 +280,9 @@ app.post("/upload", async (c) => {
       return c.json({ success: false, error: "Failed to save chunk" }, 500);
     }
 
-    // Queue transcription in background
-    queueTranscription(chunk.id);
+    // Queue transcription in background (use API key from header if provided)
+    const apiKey = c.req.header("X-OpenAI-Key");
+    queueTranscription(chunk.id, apiKey);
 
     return c.json({
       success: true,
@@ -290,7 +292,7 @@ app.post("/upload", async (c) => {
         bucketPath: chunk.bucketPath,
         checksum: chunk.checksum,
       },
-      transcriptionQueued: isTranscriptionEnabled(),
+      transcriptionQueued: isTranscriptionEnabled() || !!apiKey,
     });
   } catch (error) {
     console.error("Failed to upload chunk:", error);
@@ -612,10 +614,12 @@ app.post("/:chunkId/transcribe", async (c) => {
   try {
     const chunkId = c.req.param("chunkId");
 
-    if (!isTranscriptionEnabled()) {
+    const apiKey = c.req.header("X-OpenAI-Key");
+    
+    if (!isTranscriptionEnabled() && !apiKey) {
       return c.json({
         success: false,
-        error: "Transcription not enabled (OPENAI_API_KEY not set)",
+        error: "Transcription not enabled. Add your OpenAI API key in Settings.",
       }, 400);
     }
 
@@ -630,7 +634,7 @@ app.post("/:chunkId/transcribe", async (c) => {
     }
 
     // Process synchronously for retry requests
-    const result = await transcribeChunk(chunkId);
+    const result = await transcribeChunk(chunkId, apiKey);
 
     return c.json({
       success: result.success,

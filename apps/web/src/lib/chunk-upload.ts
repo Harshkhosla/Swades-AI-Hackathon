@@ -4,8 +4,27 @@ import {
   deleteChunkFromOPFS,
   listChunksInOPFS,
 } from "./opfs";
+import { getApiKey } from "./config";
 
 const API_BASE = env.NEXT_PUBLIC_SERVER_URL;
+
+/**
+ * Get headers including API key if configured
+ */
+function getHeaders(contentType?: string): Record<string, string> {
+  const headers: Record<string, string> = {};
+  
+  if (contentType) {
+    headers["Content-Type"] = contentType;
+  }
+  
+  const apiKey = getApiKey();
+  if (apiKey) {
+    headers["X-OpenAI-Key"] = apiKey;
+  }
+  
+  return headers;
+}
 
 export type ChunkUploadStatus =
   | "pending"
@@ -127,7 +146,7 @@ export async function confirmS3Upload(params: {
   try {
     const response = await fetch(`${API_BASE}/api/chunks/confirm-upload`, {
       method: "POST",
-      headers: { "Content-Type": "application/json" },
+      headers: getHeaders("application/json"),
       body: JSON.stringify(params),
     });
 
@@ -290,8 +309,16 @@ export async function uploadChunk(params: {
       formData.append("duration", Math.round(params.duration * 1000).toString());
     }
 
+    // Get API key header (don't set Content-Type for FormData)
+    const apiKey = getApiKey();
+    const headers: Record<string, string> = {};
+    if (apiKey) {
+      headers["X-OpenAI-Key"] = apiKey;
+    }
+
     const response = await fetch(`${API_BASE}/api/chunks/upload`, {
       method: "POST",
+      headers,
       body: formData,
     });
 
@@ -617,4 +644,127 @@ export function getOrCreateClientId(): string {
   }
 
   return clientId;
+}
+
+// ============================================
+// Transcription API
+// ============================================
+
+export interface TranscriptChunk {
+  index: number;
+  transcript: string | null;
+  status: string;
+  language: string | null;
+  confidence: number | null;
+}
+
+export interface RecordingTranscript {
+  success: boolean;
+  recordingId?: string;
+  transcript?: string;
+  chunks?: TranscriptChunk[];
+  error?: string;
+}
+
+/**
+ * Get the full transcript for a recording
+ */
+export async function getRecordingTranscript(
+  recordingId: string
+): Promise<RecordingTranscript> {
+  try {
+    const response = await fetch(
+      `${API_BASE}/api/chunks/recording/${recordingId}/transcript`,
+      {
+        headers: getHeaders(),
+      }
+    );
+
+    const data = await response.json();
+
+    if (!response.ok) {
+      return { success: false, error: data.error || "Failed to get transcript" };
+    }
+
+    return {
+      success: true,
+      recordingId: data.recordingId,
+      transcript: data.transcript,
+      chunks: data.chunks,
+    };
+  } catch (error) {
+    return {
+      success: false,
+      error: error instanceof Error ? error.message : "Network error",
+    };
+  }
+}
+
+/**
+ * Retry transcription for a specific chunk
+ */
+export async function retryTranscription(chunkId: string): Promise<{
+  success: boolean;
+  transcript?: string;
+  language?: string;
+  confidence?: number;
+  error?: string;
+}> {
+  try {
+    const response = await fetch(
+      `${API_BASE}/api/chunks/${chunkId}/transcribe`,
+      {
+        method: "POST",
+        headers: getHeaders("application/json"),
+      }
+    );
+
+    const data = await response.json();
+
+    if (!response.ok) {
+      return { success: false, error: data.error || "Transcription failed" };
+    }
+
+    return {
+      success: data.success,
+      transcript: data.transcription?.transcript,
+      language: data.transcription?.language,
+      confidence: data.transcription?.confidence,
+      error: data.error,
+    };
+  } catch (error) {
+    return {
+      success: false,
+      error: error instanceof Error ? error.message : "Network error",
+    };
+  }
+}
+
+/**
+ * Check if transcription is enabled on the server
+ */
+export async function checkTranscriptionStatus(): Promise<{
+  enabled: boolean;
+  model?: string;
+}> {
+  try {
+    const response = await fetch(
+      `${API_BASE}/api/chunks/transcription-status`,
+      {
+        headers: getHeaders(),
+      }
+    );
+
+    if (!response.ok) {
+      return { enabled: false };
+    }
+
+    const data = await response.json();
+    return {
+      enabled: data.enabled,
+      model: data.model,
+    };
+  } catch {
+    return { enabled: false };
+  }
 }

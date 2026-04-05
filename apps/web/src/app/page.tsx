@@ -1,6 +1,7 @@
 "use client";
 
 import { useEffect, useState } from "react";
+import { loadConfig, saveConfig, maskApiKey, hasApiKey, type AppConfig } from "@/lib/config";
 
 const TITLE_TEXT = `
  ██████╗ ███████╗████████╗████████╗███████╗██████╗
@@ -91,11 +92,157 @@ function StatCard({ label, value, subtext }: { label: string; value: number | st
   );
 }
 
+function SettingsPanel() {
+  const [apiKey, setApiKey] = useState("");
+  const [savedKey, setSavedKey] = useState<string | null>(null);
+  const [showKey, setShowKey] = useState(false);
+  const [saving, setSaving] = useState(false);
+  const [message, setMessage] = useState<{ type: "success" | "error"; text: string } | null>(null);
+
+  useEffect(() => {
+    const config = loadConfig();
+    if (config.openaiApiKey) {
+      setSavedKey(config.openaiApiKey);
+    }
+  }, []);
+
+  const handleSave = () => {
+    if (!apiKey.trim()) {
+      setMessage({ type: "error", text: "Please enter an API key" });
+      return;
+    }
+
+    if (!apiKey.startsWith("sk-")) {
+      setMessage({ type: "error", text: "Invalid API key format. Should start with 'sk-'" });
+      return;
+    }
+
+    setSaving(true);
+    try {
+      saveConfig({ openaiApiKey: apiKey });
+      setSavedKey(apiKey);
+      setApiKey("");
+      setMessage({ type: "success", text: "API key saved! Transcription will now work automatically." });
+      setTimeout(() => setMessage(null), 3000);
+    } catch {
+      setMessage({ type: "error", text: "Failed to save API key" });
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  const handleClear = () => {
+    saveConfig({ openaiApiKey: undefined });
+    setSavedKey(null);
+    setMessage({ type: "success", text: "API key removed" });
+    setTimeout(() => setMessage(null), 3000);
+  };
+
+  return (
+    <section className="rounded-lg border p-4 border-dashed border-yellow-500/50 bg-yellow-500/5">
+      <div className="flex items-center gap-2 mb-4">
+        <svg className="w-5 h-5 text-yellow-500" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+          <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M10.325 4.317c.426-1.756 2.924-1.756 3.35 0a1.724 1.724 0 002.573 1.066c1.543-.94 3.31.826 2.37 2.37a1.724 1.724 0 001.065 2.572c1.756.426 1.756 2.924 0 3.35a1.724 1.724 0 00-1.066 2.573c.94 1.543-.826 3.31-2.37 2.37a1.724 1.724 0 00-2.572 1.065c-.426 1.756-2.924 1.756-3.35 0a1.724 1.724 0 00-2.573-1.066c-1.543.94-3.31-.826-2.37-2.37a1.724 1.724 0 00-1.065-2.572c-1.756-.426-1.756-2.924 0-3.35a1.724 1.724 0 001.066-2.573c-.94-1.543.826-3.31 2.37-2.37.996.608 2.296.07 2.572-1.065z" />
+          <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M15 12a3 3 0 11-6 0 3 3 0 016 0z" />
+        </svg>
+        <h2 className="font-semibold text-lg">Settings</h2>
+      </div>
+
+      <div className="space-y-4">
+        <div>
+          <label className="block text-sm font-medium mb-2">
+            OpenAI API Key
+            <span className="text-muted-foreground font-normal ml-2">(for Whisper transcription)</span>
+          </label>
+          
+          {savedKey ? (
+            <div className="flex items-center gap-2">
+              <div className="flex-1 px-3 py-2 bg-muted rounded border text-sm font-mono">
+                {showKey ? savedKey : maskApiKey(savedKey)}
+              </div>
+              <button
+                onClick={() => setShowKey(!showKey)}
+                className="px-3 py-2 text-sm border rounded hover:bg-muted"
+              >
+                {showKey ? "Hide" : "Show"}
+              </button>
+              <button
+                onClick={handleClear}
+                className="px-3 py-2 text-sm border border-red-500/50 text-red-400 rounded hover:bg-red-500/10"
+              >
+                Remove
+              </button>
+            </div>
+          ) : (
+            <div className="flex gap-2">
+              <input
+                type="password"
+                value={apiKey}
+                onChange={(e) => setApiKey(e.target.value)}
+                placeholder="sk-..."
+                className="flex-1 px-3 py-2 bg-background border rounded text-sm font-mono"
+              />
+              <button
+                onClick={handleSave}
+                disabled={saving}
+                className="px-4 py-2 bg-primary text-primary-foreground rounded text-sm font-medium hover:bg-primary/90 disabled:opacity-50"
+              >
+                {saving ? "Saving..." : "Save"}
+              </button>
+            </div>
+          )}
+          
+          <p className="text-xs text-muted-foreground mt-2">
+            Get your API key from{" "}
+            <a 
+              href="https://platform.openai.com/api-keys" 
+              target="_blank" 
+              rel="noopener noreferrer"
+              className="text-blue-400 hover:underline"
+            >
+              platform.openai.com/api-keys
+            </a>
+            . Your key is encrypted and stored locally in your browser.
+          </p>
+        </div>
+
+        {message && (
+          <div className={`px-3 py-2 rounded text-sm ${
+            message.type === "success" 
+              ? "bg-green-500/20 text-green-400 border border-green-500/30" 
+              : "bg-red-500/20 text-red-400 border border-red-500/30"
+          }`}>
+            {message.text}
+          </div>
+        )}
+
+        <div className="pt-4 border-t">
+          <h3 className="text-sm font-medium mb-2">How Transcription Works</h3>
+          <ol className="text-xs text-muted-foreground space-y-1 list-decimal list-inside">
+            <li>Record audio on the Recorder page</li>
+            <li>Each 5-second chunk is automatically uploaded</li>
+            <li>With an API key, chunks are transcribed using OpenAI Whisper</li>
+            <li>View transcripts in real-time as they complete</li>
+          </ol>
+        </div>
+      </div>
+    </section>
+  );
+}
+
 export default function Home() {
   const [health, setHealth] = useState<HealthData | null>(null);
   const [stats, setStats] = useState<StatsData | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
+  const [showSettings, setShowSettings] = useState(false);
+
+  // Check if API key exists on mount
+  useEffect(() => {
+    if (!hasApiKey()) {
+      setShowSettings(true);
+    }
+  }, []);
 
   useEffect(() => {
     async function fetchData() {
@@ -134,9 +281,26 @@ export default function Home() {
 
   return (
     <div className="container mx-auto max-w-4xl px-4 py-2">
-      <pre className="overflow-x-auto font-mono text-xs sm:text-sm mb-6">{TITLE_TEXT}</pre>
+      <div className="flex items-start justify-between mb-4">
+        <pre className="overflow-x-auto font-mono text-xs sm:text-sm flex-1">{TITLE_TEXT}</pre>
+        <button
+          onClick={() => setShowSettings(!showSettings)}
+          className={`ml-4 mt-2 p-2 rounded border hover:bg-muted transition-colors ${
+            showSettings ? "bg-muted border-primary" : ""
+          }`}
+          title="Settings"
+        >
+          <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M10.325 4.317c.426-1.756 2.924-1.756 3.35 0a1.724 1.724 0 002.573 1.066c1.543-.94 3.31.826 2.37 2.37a1.724 1.724 0 001.065 2.572c1.756.426 1.756 2.924 0 3.35a1.724 1.724 0 00-1.066 2.573c.94 1.543-.826 3.31-2.37 2.37a1.724 1.724 0 00-2.572 1.065c-.426 1.756-2.924 1.756-3.35 0a1.724 1.724 0 00-2.573-1.066c-1.543.94-3.31-.826-2.37-2.37a1.724 1.724 0 00-1.065-2.572c-1.756-.426-1.756-2.924 0-3.35a1.724 1.724 0 001.066-2.573c-.94-1.543.826-3.31 2.37-2.37.996.608 2.296.07 2.572-1.065z" />
+            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M15 12a3 3 0 11-6 0 3 3 0 016 0z" />
+          </svg>
+        </button>
+      </div>
       
       <div className="grid gap-6">
+        {/* Settings Panel */}
+        {showSettings && <SettingsPanel />}
+
         {/* API Status */}
         <section className="rounded-lg border p-4">
           <div className="flex items-center justify-between mb-4">
