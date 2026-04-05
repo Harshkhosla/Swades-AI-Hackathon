@@ -1,14 +1,13 @@
-import dotenv from "dotenv";
+import * as dotenv from "dotenv";
 import { createEnv } from "@t3-oss/env-core";
 import { z } from "zod";
-import { resolve, dirname } from "path";
-import { fileURLToPath } from "url";
-import { existsSync } from "fs";
+import { resolve, dirname } from "node:path";
+import { fileURLToPath } from "node:url";
+import { existsSync } from "node:fs";
 
 // Get this file's directory
-const __dirname = typeof import.meta.dirname !== 'undefined' 
-  ? import.meta.dirname 
-  : dirname(fileURLToPath(import.meta.url));
+const __filename = fileURLToPath(import.meta.url);
+const __dirname = dirname(__filename);
 
 // Load .env from multiple possible locations - both relative to cwd and to this package
 const envPaths = [
