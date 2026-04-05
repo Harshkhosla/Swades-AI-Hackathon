@@ -30,6 +30,7 @@ export const env = createEnv({
     DATABASE_URL: z.string().min(1),
     CORS_ORIGIN: z.url(),
     NODE_ENV: z.enum(["development", "production", "test"]).default("development"),
+    
     // Storage bucket config (S3-compatible - works with MinIO, AWS S3, etc.)
     STORAGE_BUCKET_NAME: z.string().default("recordings"),
     STORAGE_ENDPOINT: z.string().optional(), // e.g., "http://localhost:9000" for MinIO
@@ -38,6 +39,19 @@ export const env = createEnv({
     STORAGE_REGION: z.string().default("us-east-1"),
     // Local file storage fallback path
     STORAGE_LOCAL_PATH: z.string().default("./uploads"),
+    
+    // Redis cache (optional but recommended for production)
+    REDIS_URL: z.string().optional(), // e.g., "redis://localhost:6379" or AWS ElastiCache
+    
+    // CDN configuration (optional, for serving audio files)
+    CDN_URL: z.string().optional(), // e.g., "https://d123.cloudfront.net"
+    
+    // Rate limiting
+    RATE_LIMIT_REQUESTS: z.coerce.number().default(100), // requests per window
+    RATE_LIMIT_WINDOW: z.coerce.number().default(60), // window in seconds
+    
+    // API authentication (optional)
+    API_KEY: z.string().optional(), // For server-to-server auth
   },
   runtimeEnv: process.env,
   emptyStringAsUndefined: true,

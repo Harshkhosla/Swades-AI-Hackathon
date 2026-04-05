@@ -4,6 +4,8 @@ import {
   timestamp,
   integer,
   pgEnum,
+  index,
+  uniqueIndex,
 } from "drizzle-orm/pg-core";
 
 // Enums
@@ -32,7 +34,14 @@ export const recordings = pgTable("recordings", {
   createdAt: timestamp("created_at").defaultNow().notNull(),
   updatedAt: timestamp("updated_at").defaultNow().notNull(),
   completedAt: timestamp("completed_at"),
-});
+}, (table) => [
+  // Index for finding recordings by client (user's recordings)
+  index("recordings_client_id_idx").on(table.clientId),
+  // Index for finding active/recent recordings
+  index("recordings_status_created_idx").on(table.status, table.createdAt),
+  // Index for finding incomplete recordings for reconciliation
+  index("recordings_status_updated_idx").on(table.status, table.updatedAt),
+]);
 
 // Chunks table - individual audio chunks
 export const chunks = pgTable("chunks", {
@@ -45,13 +54,22 @@ export const chunks = pgTable("chunks", {
   bucketPath: text("bucket_path"), // Path in storage bucket
   fileSize: integer("file_size"), // Size in bytes
   duration: integer("duration"), // Duration in milliseconds
-  checksum: text("checksum"), // MD5 or SHA256 hash for verification
+  checksum: text("checksum"), // SHA256 hash for verification
   uploadedAt: timestamp("uploaded_at"),
   acknowledgedAt: timestamp("acknowledged_at"),
   createdAt: timestamp("created_at").defaultNow().notNull(),
   retryCount: integer("retry_count").default(0).notNull(),
   lastError: text("last_error"),
-});
+}, (table) => [
+  // Unique constraint: one chunk per index per recording
+  uniqueIndex("chunks_recording_index_unique").on(table.recordingId, table.chunkIndex),
+  // Index for finding chunks by recording (ordered)
+  index("chunks_recording_id_idx").on(table.recordingId),
+  // Index for finding chunks by status (for reconciliation)
+  index("chunks_status_idx").on(table.status),
+  // Index for finding failed chunks that need retry
+  index("chunks_status_retry_idx").on(table.status, table.retryCount),
+]);
 
 // Types
 export type Recording = typeof recordings.$inferSelect;

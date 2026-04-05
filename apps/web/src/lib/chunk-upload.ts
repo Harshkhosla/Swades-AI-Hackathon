@@ -14,6 +14,8 @@ export type ChunkUploadStatus =
   | "acknowledged"
   | "failed";
 
+export type AudioFormat = "wav" | "opus";
+
 export interface ChunkState {
   id: string;
   chunkIndex: number;
@@ -27,6 +29,179 @@ export interface UploadResult {
   error?: string;
   checksum?: string;
   needsReupload?: boolean;
+}
+
+export interface PresignedUrlResult {
+  success: boolean;
+  uploadUrl?: string | null;
+  key?: string;
+  fallbackToUpload?: boolean;
+  error?: string;
+}
+
+// ============================================
+// Presigned URL & Direct S3 Upload
+// ============================================
+
+/**
+ * Get a presigned URL for direct S3 upload
+ * Returns null uploadUrl if S3 is not configured (use fallback upload)
+ */
+export async function getPresignedUploadUrl(params: {
+  recordingId: string;
+  chunkIndex: number;
+  chunkId: string;
+  format?: AudioFormat;
+}): Promise<PresignedUrlResult> {
+  try {
+    const response = await fetch(`${API_BASE}/api/chunks/upload-url`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        recordingId: params.recordingId,
+        chunkIndex: params.chunkIndex,
+        chunkId: params.chunkId,
+        format: params.format || "wav",
+      }),
+    });
+
+    const data = await response.json();
+
+    if (!response.ok) {
+      return { success: false, error: data.error || "Failed to get upload URL" };
+    }
+
+    return {
+      success: true,
+      uploadUrl: data.uploadUrl,
+      key: data.key,
+      fallbackToUpload: data.fallbackToUpload || false,
+    };
+  } catch (error) {
+    return {
+      success: false,
+      error: error instanceof Error ? error.message : "Network error",
+    };
+  }
+}
+
+/**
+ * Upload directly to S3 using presigned URL
+ */
+export async function uploadToS3(
+  uploadUrl: string,
+  blob: Blob,
+  contentType: string = "audio/wav"
+): Promise<{ success: boolean; error?: string }> {
+  try {
+    const response = await fetch(uploadUrl, {
+      method: "PUT",
+      body: blob,
+      headers: {
+        "Content-Type": contentType,
+      },
+    });
+
+    if (!response.ok) {
+      return { success: false, error: `S3 upload failed: ${response.status}` };
+    }
+
+    return { success: true };
+  } catch (error) {
+    return {
+      success: false,
+      error: error instanceof Error ? error.message : "S3 upload error",
+    };
+  }
+}
+
+/**
+ * Confirm direct S3 upload on server
+ */
+export async function confirmS3Upload(params: {
+  chunkId: string;
+  checksum?: string;
+  fileSize?: number;
+  duration?: number;
+}): Promise<{ success: boolean; error?: string }> {
+  try {
+    const response = await fetch(`${API_BASE}/api/chunks/confirm-upload`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(params),
+    });
+
+    const data = await response.json();
+
+    if (!response.ok) {
+      return { success: false, error: data.error || "Confirm upload failed" };
+    }
+
+    return { success: true };
+  } catch (error) {
+    return {
+      success: false,
+      error: error instanceof Error ? error.message : "Network error",
+    };
+  }
+}
+
+/**
+ * Calculate SHA-256 checksum of a blob
+ */
+export async function calculateChecksum(blob: Blob): Promise<string> {
+  const buffer = await blob.arrayBuffer();
+  const hashBuffer = await crypto.subtle.digest("SHA-256", buffer);
+  const hashArray = Array.from(new Uint8Array(hashBuffer));
+  return hashArray.map((b) => b.toString(16).padStart(2, "0")).join("");
+}
+
+/**
+ * Smart upload - uses presigned URL if available, falls back to server upload
+ */
+export async function smartUploadChunk(params: {
+  chunkId: string;
+  recordingId: string;
+  chunkIndex: number;
+  blob: Blob;
+  duration?: number;
+  format?: AudioFormat;
+}): Promise<UploadResult> {
+  // Try to get presigned URL first
+  const presignedResult = await getPresignedUploadUrl({
+    recordingId: params.recordingId,
+    chunkIndex: params.chunkIndex,
+    chunkId: params.chunkId,
+    format: params.format,
+  });
+
+  // If S3 is configured and we have a URL, upload directly
+  if (presignedResult.success && presignedResult.uploadUrl) {
+    const contentType = params.format === "opus" ? "audio/opus" : "audio/wav";
+    const s3Result = await uploadToS3(presignedResult.uploadUrl, params.blob, contentType);
+
+    if (s3Result.success) {
+      // Calculate checksum and confirm upload
+      const checksum = await calculateChecksum(params.blob);
+      const confirmResult = await confirmS3Upload({
+        chunkId: params.chunkId,
+        checksum,
+        fileSize: params.blob.size,
+        duration: params.duration ? Math.round(params.duration * 1000) : undefined,
+      });
+
+      if (confirmResult.success) {
+        return { success: true, checksum };
+      }
+      return { success: false, error: confirmResult.error };
+    }
+    
+    // S3 upload failed, fall through to server upload
+    console.warn("Direct S3 upload failed, falling back to server upload");
+  }
+
+  // Fall back to server upload
+  return uploadChunk(params);
 }
 
 /**
@@ -176,6 +351,7 @@ export async function acknowledgeChunk(
 
 /**
  * Upload a chunk with retry logic
+ * Uses smart upload (presigned URL if available, server upload as fallback)
  */
 export async function uploadChunkWithRetry(
   params: {
@@ -184,16 +360,22 @@ export async function uploadChunkWithRetry(
     chunkIndex: number;
     blob: Blob;
     duration?: number;
+    format?: AudioFormat;
+    useSmartUpload?: boolean;
   },
   maxRetries = 3,
   onProgress?: (attempt: number, maxAttempts: number) => void
 ): Promise<UploadResult> {
   let lastError: string | undefined;
+  const useSmartUpload = params.useSmartUpload ?? true;
 
   for (let attempt = 1; attempt <= maxRetries; attempt++) {
     onProgress?.(attempt, maxRetries);
 
-    const result = await uploadChunk(params);
+    // Use smart upload (presigned URL) or direct server upload
+    const result = useSmartUpload 
+      ? await smartUploadChunk(params)
+      : await uploadChunk(params);
 
     if (result.success) {
       // Chunk uploaded, now acknowledge

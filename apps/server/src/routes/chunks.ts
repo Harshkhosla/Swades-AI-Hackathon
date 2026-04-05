@@ -2,9 +2,204 @@ import { Hono } from "hono";
 import { z } from "zod";
 import { db, chunks, recordings } from "@my-better-t-app/db";
 import { eq, and, sql } from "drizzle-orm";
-import { storage, getChunkStorageKey } from "../lib/storage";
+import { storage, getChunkStorageKey, s3Storage, getPlaybackUrl } from "../lib/storage";
+import { 
+  cachePresignedUrl, 
+  getCachedPresignedUrl 
+} from "../lib/cache";
 
 const app = new Hono();
+
+// ============================================
+// Presigned URL endpoint for direct S3 uploads
+// ============================================
+
+const getUploadUrlSchema = z.object({
+  recordingId: z.string().uuid(),
+  chunkIndex: z.number().int().min(0),
+  chunkId: z.string().uuid(),
+  format: z.enum(["wav", "opus"]).default("wav"),
+});
+
+/**
+ * Get presigned URL for direct browser-to-S3 upload
+ * This bypasses the server for large file uploads
+ */
+app.post("/upload-url", async (c) => {
+  try {
+    const body = await c.req.json();
+    const parsed = getUploadUrlSchema.safeParse(body);
+
+    if (!parsed.success) {
+      return c.json({ success: false, error: "Invalid request body" }, 400);
+    }
+
+    const { recordingId, chunkIndex, chunkId, format } = parsed.data;
+    const storageKey = getChunkStorageKey(recordingId, chunkIndex, format);
+
+    // Check cache first
+    const cachedUrl = await getCachedPresignedUrl(storageKey);
+    if (cachedUrl) {
+      return c.json({
+        success: true,
+        uploadUrl: cachedUrl,
+        key: storageKey,
+        cached: true,
+      });
+    }
+
+    // S3 not configured - fall back to regular upload endpoint
+    if (!s3Storage) {
+      return c.json({
+        success: true,
+        uploadUrl: null,
+        fallbackToUpload: true,
+        message: "S3 not configured, use /upload endpoint instead",
+      });
+    }
+
+    // Generate presigned URL
+    const result = await s3Storage.getPresignedUploadUrl(storageKey);
+    
+    if (!result.success || !result.uploadUrl) {
+      return c.json(
+        { success: false, error: result.error || "Failed to generate URL" },
+        500
+      );
+    }
+
+    // Cache the URL
+    await cachePresignedUrl(storageKey, result.uploadUrl, result.expiresIn || 900);
+
+    // Pre-create chunk record in pending state
+    await db
+      .insert(chunks)
+      .values({
+        id: chunkId,
+        recordingId,
+        chunkIndex,
+        status: "pending",
+        bucketPath: storageKey,
+      })
+      .onConflictDoNothing();
+
+    return c.json({
+      success: true,
+      uploadUrl: result.uploadUrl,
+      key: storageKey,
+      expiresIn: result.expiresIn,
+      cached: false,
+    });
+  } catch (error) {
+    console.error("Failed to generate upload URL:", error);
+    return c.json(
+      { success: false, error: "Failed to generate upload URL" },
+      500
+    );
+  }
+});
+
+/**
+ * Confirm direct S3 upload completed
+ * Called after browser uploads directly to S3
+ */
+app.post("/confirm-upload", async (c) => {
+  try {
+    const body = await c.req.json();
+    const { chunkId, checksum, fileSize, duration } = body;
+
+    if (!chunkId) {
+      return c.json({ success: false, error: "chunkId required" }, 400);
+    }
+
+    // Get the chunk record
+    const [chunk] = await db
+      .select()
+      .from(chunks)
+      .where(eq(chunks.id, chunkId))
+      .limit(1);
+
+    if (!chunk) {
+      return c.json({ success: false, error: "Chunk not found" }, 404);
+    }
+
+    // Verify file exists in S3
+    if (chunk.bucketPath) {
+      const exists = await storage.exists(chunk.bucketPath);
+      if (!exists) {
+        return c.json(
+          { success: false, error: "File not found in storage" },
+          400
+        );
+      }
+    }
+
+    // Update chunk record
+    const [updated] = await db
+      .update(chunks)
+      .set({
+        status: "uploaded",
+        checksum,
+        fileSize,
+        duration,
+        uploadedAt: new Date(),
+      })
+      .where(eq(chunks.id, chunkId))
+      .returning();
+
+    if (!updated) {
+      return c.json({ success: false, error: "Failed to update chunk" }, 500);
+    }
+
+    return c.json({
+      success: true,
+      chunk: {
+        id: updated.id,
+        status: updated.status,
+        bucketPath: updated.bucketPath,
+      },
+    });
+  } catch (error) {
+    console.error("Failed to confirm upload:", error);
+    return c.json(
+      { success: false, error: "Failed to confirm upload" },
+      500
+    );
+  }
+});
+
+/**
+ * Get playback URL for a chunk (CDN or presigned)
+ */
+app.get("/:chunkId/playback-url", async (c) => {
+  try {
+    const chunkId = c.req.param("chunkId");
+
+    const [chunk] = await db
+      .select()
+      .from(chunks)
+      .where(eq(chunks.id, chunkId))
+      .limit(1);
+
+    if (!chunk || !chunk.bucketPath) {
+      return c.json({ success: false, error: "Chunk not found" }, 404);
+    }
+
+    const playbackUrl = await getPlaybackUrl(chunk.bucketPath);
+
+    return c.json({
+      success: true,
+      playbackUrl,
+      format: chunk.bucketPath.endsWith(".opus") ? "opus" : "wav",
+    });
+  } catch (error) {
+    console.error("Failed to get playback URL:", error);
+    return c.json(
+      { success: false, error: "Failed to get playback URL" },
+      500
+    );
+  }
+});
 
 // Upload a chunk
 app.post("/upload", async (c) => {
